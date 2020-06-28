@@ -7,14 +7,8 @@ import Debug.Trace
 
 import Data.Linear.Array
 
-showSep : String -> List String -> String
-showSep _ [] = ""
-showSep _ [x] = x
-showSep s (x::xs) = fastAppend (x::(map ((++) s) xs))
-
 %default total
 
-public export
 interface LFoldableA (t : Type -> Type) where
   lfoldra : (func : ((_ : elem) -> (1 _ : acc) -> acc)) -> (1 init : acc) -> (input : t elem) -> acc
 
@@ -22,10 +16,12 @@ LFoldableA List where
   lfoldra f acc [] = acc
   lfoldra f acc (x::xs) = f x $ lfoldra f acc xs
 
+public export
 data Var = MkVar Int
 Show Var where
   show (MkVar n) = show n
 
+public export
 data Lit = MkPos Var | MkNeg Var
 Show Lit where
   show (MkPos v) = " " ++ show v
@@ -39,8 +35,13 @@ getVar : Lit -> Var
 getVar (MkPos v) = v
 getVar (MkNeg v) = v
 
+export
 data Clause : Type where
   MkClause : (l : List Lit) -> {auto ok : NonEmpty l} -> Clause
+
+export
+toClause : (l : List Lit) -> {auto ok : NonEmpty l} -> Clause
+toClause l {ok} = MkClause l {ok}
 
 Show Clause where
   show (MkClause l) = show l
@@ -94,19 +95,16 @@ assign as var v = write as (varIndex var) (Just v)
 unassign : (1 _ : Assignments) -> Var -> Assignments
 unassign as var = write as (varIndex var) Nothing
 
-dumpAs' : Show t => Int -> List String -> (1 _ : LinArray t) -> LPair (List String) (LinArray t)
+dumpAs' : Array arr => Int -> List (Var, Maybe Bool) -> arr (Maybe Bool) -> List (Var, Maybe Bool)
 dumpAs' i s as =
-  let sz # as = msize as
-      in if i >= sz then (reverse s) # as
-                    else let e # as = mread as i in
-                    assert_total $ dumpAs' (i+1) ((show i ++ " = " ++ showA e)::s) as
-      where
-        showA : Show x => Maybe x -> String
-        showA Nothing = ""
-        showA (Just x) = show x
+  let sz = size as in
+      if i >= sz then reverse s
+                 else case read as i of
+                           Nothing => dumpAs' (assert_smaller i (i+1)) ((MkVar i, Nothing)::s) as
+                           Just e => dumpAs' (assert_smaller i (i+1)) ((MkVar i, e)::s) as
 
-dumpArr : Show t => (1 _ : LinArray t) -> LPair (List String) (LinArray t)
-dumpArr as = dumpAs' 0 [] as
+dumpArr : (1 _ : Assignments) -> List (Var, Maybe Bool)
+dumpArr as = toIArray as (dumpAs' 0 [])
 
 initAssignments : Int -> Assignments
 initAssignments n = newArray n (initAssignments' (integerToNat $ cast n)) where
@@ -114,7 +112,6 @@ initAssignments n = newArray n (initAssignments' (integerToNat $ cast n)) where
   initAssignments' Z as = as
   initAssignments' (S n) as = write (initAssignments' n as) (cast n) Nothing
 
-total
 updateWatchlist : (1 _ : Watchlist) -> Lit -> (1 _ : Assignments) -> LPair Bool (Watchlist, Assignments)
 updateWatchlist wl assignFalse as =
   let (clauses # wl) = getWatched wl assignFalse in
@@ -164,17 +161,18 @@ mutual
                                                   (True # (wl', as')) => solve numVars (assert_smaller d (d+1)) wl' as'
                                                   f => f
 
-sat : Int -> List Clause -> Bool
+export
+sat : Int -> List Clause -> Maybe (List (Var, Bool))
 sat numVars clauses =
   let wl = initWatchlist (2 * numVars) clauses
       as = initAssignments numVars
-      (r # (wl', as')) = solve numVars 0 wl as
-      result # as' = dumpArr as'
-      in
-      trace (showSep "|" result) $ destroy wl' $ destroy as' $ r
+      (r # (wl', as')) = solve numVars 0 wl as in
+      if r then traverse result (dumpArr as')
+           else Nothing
   where
-    destroy : (1 _ : LinArray a) -> b -> b
-    destroy a b = toIArray a (\_ => b)
+    result : (Var, Maybe Bool) -> Maybe (Var, Bool)
+    result (v, Just a) = Just (v, a)
+    result (_, Nothing) = Nothing
 
 -- Test Data
 
