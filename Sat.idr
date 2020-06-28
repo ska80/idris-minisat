@@ -1,9 +1,8 @@
-module Main
+module Sat
 
 import Data.List
 import Data.Maybe
 import Data.Strings
-import Debug.Trace
 
 import Data.Linear.Array
 
@@ -18,11 +17,13 @@ LFoldableA List where
 
 public export
 data Var = MkVar Int
+export
 Show Var where
   show (MkVar n) = show n
 
 public export
 data Lit = MkPos Var | MkNeg Var
+export
 Show Lit where
   show (MkPos v) = " " ++ show v
   show (MkNeg v) = "~" ++ show v
@@ -135,7 +136,7 @@ updateWatchlist wl assignFalse as =
 
   findAlt : (1 _ : Clause) -> (1 _ : LPair (Maybe (List (Lit, Clause))) Assignments) -> LPair (Maybe (List (Lit, Clause))) Assignments
   findAlt (MkClause ls) (acc # as) = let (mlit # as') = altOk ls as in
-                                         case trace ("mlit = " ++ show mlit) mlit of
+                                         case mlit of
                                               Just l => (map ((::) (l, MkClause ls)) acc # as')
                                               Nothing => (Nothing # as')
 
@@ -173,13 +174,3 @@ sat numVars clauses =
     result : (Var, Maybe Bool) -> Maybe (Var, Bool)
     result (v, Just a) = Just (v, a)
     result (_, Nothing) = Nothing
-
--- Test Data
-
-clauses : List Clause
-clauses = [
-  MkClause [MkPos (MkVar 0), MkPos (MkVar 1), MkNeg (MkVar 2)],
-  MkClause [MkPos (MkVar 1), MkPos (MkVar 2)],
-  MkClause [MkNeg (MkVar 1)],
-  MkClause [MkNeg (MkVar 0), MkPos (MkVar 2)]
-  ]
