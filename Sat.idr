@@ -6,6 +6,8 @@ import Data.Strings
 
 import Data.Linear.Array
 
+import Control.Linear.LState
+
 %default total
 
 interface LFoldableA (t : Type -> Type) where
@@ -14,6 +16,9 @@ interface LFoldableA (t : Type -> Type) where
 LFoldableA List where
   lfoldra f acc [] = acc
   lfoldra f acc (x::xs) = f x $ lfoldra f acc xs
+
+lfoldlM : (Foldable t, LMonad m) => (funcM: a -> b -> m a) -> (init: a) -> (input: t b) -> m a
+lfoldlM fm a0 = foldl (\ma,b => ma >>= flip fm b) (pure a0)
 
 public export
 data Var = MkVar Int
@@ -84,17 +89,28 @@ Assignments = LinArray (Maybe Bool)
 varIndex : Var -> Int
 varIndex (MkVar n) = n
 
+s_value : Var -> LState Assignments (Maybe Bool)
+s_value var = do
+  val <- run $ (\as => mread as (varIndex var))
+  pure $ fromMaybe Nothing val
+
 value : (1 _ : Assignments) -> Var -> LPair (Maybe Bool) (Assignments)
-value as var = let (v # as') = mread as (varIndex var) in
-                   case v of
-                        Just x => (x # as')
-                        Nothing => (Nothing # as')
+value as var = runLState as (s_value var)
+
+s_assign : Var -> Bool -> LState Assignments ()
+s_assign var v = change (\as => write as (varIndex var) (Just v))
 
 assign : (1 _ : Assignments) -> Var -> Bool -> Assignments
-assign as var v = write as (varIndex var) (Just v)
+assign as var v = execLState as (s_assign var v)
+
+s_unassign : Var -> LState Assignments ()
+s_unassign var = change (\as => write as (varIndex var) Nothing)
 
 unassign : (1 _ : Assignments) -> Var -> Assignments
-unassign as var = write as (varIndex var) Nothing
+unassign as var = execLState as (s_unassign var)
+
+SolverState : Type -> Type
+SolverState = LState (Watchlist, Assignments)
 
 dumpAs' : Array arr => Int -> List (Var, Maybe Bool) -> arr (Maybe Bool) -> List (Var, Maybe Bool)
 dumpAs' i s as =
@@ -119,26 +135,31 @@ updateWatchlist wl assignFalse as =
       case clauses of
            [] => True # (wl, as)
            (c::rest) =>
-               let (alts # as') = lfoldra findAlt (Just [] # as) (c::rest) in
-                   case alts of
+               let (alts # as') = runLState as (lfoldlM s_findAlt (Just []) (c::rest))
+               in
+                   case the (Maybe (List (Lit, Clause))) alts of
                         Nothing => False # (wl, as')
                         Just alts => let wl' = removeWatches wl assignFalse
                                          wl'' = addWatches wl' alts
                                      in True # (wl'', as')
       where
-  altOk : List Lit -> (1 _ : Assignments) -> LPair (Maybe Lit) Assignments
-  altOk [] as = (Nothing # as)
-  altOk (l::ls) as =
-    case value as (getVar l) of
-         ((Just x) # as') => if x == isPos l then (Just l) # as'
-                                             else altOk ls as'
-         ((Nothing) # as') => (Just l) # as'
 
-  findAlt : (1 _ : Clause) -> (1 _ : LPair (Maybe (List (Lit, Clause))) Assignments) -> LPair (Maybe (List (Lit, Clause))) Assignments
-  findAlt (MkClause ls) (acc # as) = let (mlit # as') = altOk ls as in
-                                         case mlit of
-                                              Just l => (map ((::) (l, MkClause ls)) acc # as')
-                                              Nothing => (Nothing # as')
+  s_altOk : List Lit -> LState Assignments (Maybe Lit)
+  s_altOk [] = pure Nothing
+  s_altOk (l::ls) = case !(s_value (getVar l)) of
+                         Just x => if x == isPos l then pure $ Just l
+                                                   else s_altOk ls
+                         Nothing => pure $ Just l
+
+  s_findAlt : (Maybe (List (Lit, Clause))) -> (_ : Clause) -> LState Assignments (Maybe (List (Lit, Clause)))
+  s_findAlt Nothing _ = pure Nothing
+  s_findAlt (Just acc) (MkClause ls) = do
+    (Just foundAlt) <- s_altOk ls
+    | Nothing => pure Nothing
+    pure $ Just ((foundAlt, MkClause ls)::acc)
+
+  --findAlt : (_ : Clause) -> (1 _ : LPair (Maybe (List (Lit, Clause))) Assignments) -> LPair (Maybe (List (Lit, Clause))) Assignments
+  --findAlt c (acc # as) = runLState as (s_findAlt c acc)
 
 mutual
   solveTry : Bool -> Int -> Int -> (1 _ : Watchlist) -> (1 _ : Assignments) -> LPair Bool (Watchlist, Assignments)
