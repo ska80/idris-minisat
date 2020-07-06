@@ -17,6 +17,13 @@ export
 Show Var where
   show (MkVar n) = show n
 
+export
+Eq Var where
+  (MkVar a) == (MkVar b) = a == b
+export
+Ord Var where
+  compare (MkVar a) (MkVar b) = compare a b
+
 public export
 data Lit = MkPos Var | MkNeg Var
 export
@@ -153,20 +160,18 @@ mutual
           else do liftSt $ unassign var
                   pure False
 
-  solve : Int -> Int -> SolverState Bool
-  solve numVars d = if d >= numVars then pure True else do
+  solve : List Var -> SolverState Bool
+  solve [] = pure True
+  solve (var::ds) = do
     tryValues [False, True]
     where
-      var : Var
-      var = MkVar d
-
       tryValues : List Bool -> SolverState Bool
       tryValues [] = pure False
       tryValues (val::rest) = do
         couldBe <- solveTry val var
         if couldBe
            then do
-             whenIsVal <- solve numVars (assert_smaller d (d+1))
+             whenIsVal <- solve ds
              if whenIsVal then pure True
                           else do
                             liftSt $ unassign var
@@ -175,12 +180,34 @@ mutual
            else if val then pure False
            else tryValues rest
 
+prepareAndSolve : Int -> List Clause -> SolverState Bool
+prepareAndSolve numVars clauses = let vars = map MkVar [0 .. (numVars - 1)] in do
+  let varsFreq = map countVarNew vars
+  let mostFrequentVars = reverse $ sort varsFreq
+  solve $ map snd mostFrequentVars
+    where
+      countInClause : Int -> Var -> List Lit -> Int
+      countInClause acc v [] = acc
+      countInClause acc v (MkPos cv::rest) = if cv == v then countInClause (acc+1) v rest
+                                                        else countInClause acc v rest
+      countInClause acc v (MkNeg cv::rest) = if cv == v then countInClause (acc+1) v rest
+                                                        else countInClause acc v rest
+
+      countVarNew : Var -> (Int, Var)
+      countVarNew v = (sum $ map (\(MkClause ls) => countInClause 0 v ls) clauses, v)
+
+      countVar : Var -> SolverState (Int, Var)
+      countVar v = do watchingFalse <- liftSt $ getWatched (MkPos v)
+                      watchingTrue <- liftSt $ getWatched (MkNeg v)
+                      let count = the Int ((cast $ length watchingFalse) + (cast $ length watchingTrue))
+                      pure (count, v)
+
 export
 sat : Int -> List Clause -> Maybe (List (Var, Bool))
 sat numVars clauses =
   let wl = initWatchlist (2 * numVars) clauses
       as = initAssignments numVars
-      (r # (wl', as')) = runLState (wl, as) (solve numVars 0) in
+      (r # (wl', as')) = runLState (wl, as) (prepareAndSolve numVars clauses) in
       if r then traverse result (dumpArr as')
            else Nothing
   where
