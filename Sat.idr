@@ -6,19 +6,10 @@ import Data.Strings
 
 import Data.Linear.Array
 
+import Control.Linear
 import Control.Linear.LState
 
 %default total
-
-interface LFoldableA (t : Type -> Type) where
-  lfoldra : (func : ((_ : elem) -> (1 _ : acc) -> acc)) -> (1 init : acc) -> (input : t elem) -> acc
-
-LFoldableA List where
-  lfoldra f acc [] = acc
-  lfoldra f acc (x::xs) = f x $ lfoldra f acc xs
-
-lfoldlM : (Foldable t, LMonad m) => (funcM: a -> b -> m a) -> (init: a) -> (input: t b) -> m a
-lfoldlM fm a0 = foldl (\ma,b => ma >>= flip fm b) (pure a0)
 
 public export
 data Var = MkVar Int
@@ -59,7 +50,7 @@ litIndex : Lit -> Int
 litIndex (MkPos (MkVar n)) = 2 * n
 litIndex (MkNeg (MkVar n)) = 2 * n + 1
 
-initWatchlist : Int -> List Clause -> LinArray (List Clause)
+initWatchlist : Int -> List Clause -> Watchlist
 initWatchlist maxLit clauses = newArray maxLit (initWatchlist' clauses)
   where
     initWatchlist' : List Clause -> (1 a : Watchlist) -> Watchlist
@@ -70,18 +61,22 @@ initWatchlist maxLit clauses = newArray maxLit (initWatchlist' clauses)
           (r # arr') = mread a idx in
           initWatchlist' cs $ write arr' idx (c::(fromMaybe [] r))
 
-getWatched : (1 _ : Watchlist) -> Lit -> LPair (List Clause) Watchlist
-getWatched wl lit = let (v # wl') = mread wl (litIndex lit) in
-                        ((fromMaybe [] v) # wl')
+getWatched : Lit -> LState Watchlist (List Clause)
+getWatched lit = do
+  v <- run (\wl => mread wl (litIndex lit))
+  pure $ fromMaybe [] v
 
-removeWatches : (1 _ : Watchlist) -> Lit -> Watchlist
-removeWatches wl lit = write wl (litIndex lit) []
+removeWatches : Lit -> LState Watchlist ()
+removeWatches lit = do
+  change $ \wl => write wl (litIndex lit) []
 
-addWatches : (1 _ : Watchlist) -> List (Lit, Clause) -> Watchlist
-addWatches wl [] = wl
-addWatches wl ((l, c)::rest) =
-  let (clauses # wl') = getWatched wl l in
-  addWatches (write wl' (litIndex l) (c::clauses)) rest
+addWatch : Lit -> Clause -> LState Watchlist ()
+addWatch l c = do
+  clauses <- getWatched l
+  change $ \wl => write wl (litIndex l) (c::clauses)
+
+addWatches : List (Lit, Clause) -> LState Watchlist ()
+addWatches ls = traverse_ (uncurry addWatch) ls
 
 Assignments : Type
 Assignments = LinArray (Maybe Bool)
@@ -89,25 +84,16 @@ Assignments = LinArray (Maybe Bool)
 varIndex : Var -> Int
 varIndex (MkVar n) = n
 
-s_value : Var -> LState Assignments (Maybe Bool)
-s_value var = do
+value : Var -> LState Assignments (Maybe Bool)
+value var = do
   val <- run $ (\as => mread as (varIndex var))
   pure $ fromMaybe Nothing val
 
-value : (1 _ : Assignments) -> Var -> LPair (Maybe Bool) (Assignments)
-value as var = runLState as (s_value var)
+assign : Var -> Bool -> LState Assignments ()
+assign var v = change (\as => write as (varIndex var) (Just v))
 
-s_assign : Var -> Bool -> LState Assignments ()
-s_assign var v = change (\as => write as (varIndex var) (Just v))
-
-assign : (1 _ : Assignments) -> Var -> Bool -> Assignments
-assign as var v = execLState as (s_assign var v)
-
-s_unassign : Var -> LState Assignments ()
-s_unassign var = change (\as => write as (varIndex var) Nothing)
-
-unassign : (1 _ : Assignments) -> Var -> Assignments
-unassign as var = execLState as (s_unassign var)
+unassign : Var -> LState Assignments ()
+unassign var = change (\as => write as (varIndex var) Nothing)
 
 SolverState : Type -> Type
 SolverState = LState (Watchlist, Assignments)
@@ -129,66 +115,69 @@ initAssignments n = newArray n (initAssignments' (integerToNat $ cast n)) where
   initAssignments' Z as = as
   initAssignments' (S n) as = write (initAssignments' n as) (cast n) Nothing
 
-updateWatchlist : (1 _ : Watchlist) -> Lit -> (1 _ : Assignments) -> LPair Bool (Watchlist, Assignments)
-updateWatchlist wl assignFalse as =
-  let (clauses # wl) = getWatched wl assignFalse in
-      case clauses of
-           [] => True # (wl, as)
-           (c::rest) =>
-               let (alts # as') = runLState as (lfoldlM s_findAlt (Just []) (c::rest))
-               in
-                   case the (Maybe (List (Lit, Clause))) alts of
-                        Nothing => False # (wl, as')
-                        Just alts => let wl' = removeWatches wl assignFalse
-                                         wl'' = addWatches wl' alts
-                                     in True # (wl'', as')
-      where
+updateWatchlist : Lit -> SolverState Bool
+updateWatchlist assignFalse = do
+  needUpdate <- liftSt $ getWatched assignFalse
+  case needUpdate of
+       [] => pure True
+       needUpdate => do
+         (Just alts) <- liftSt $ lfoldlM findAlt (Just []) needUpdate
+         | Nothing => pure False
+         liftSt $ removeWatches assignFalse
+         liftSt $ addWatches alts
+         pure True
 
-  s_altOk : List Lit -> LState Assignments (Maybe Lit)
-  s_altOk [] = pure Nothing
-  s_altOk (l::ls) = case !(s_value (getVar l)) of
+    where
+
+  altOk : List Lit -> LState Assignments (Maybe Lit)
+  altOk [] = pure Nothing
+  altOk (l::ls) = case !(value (getVar l)) of
                          Just x => if x == isPos l then pure $ Just l
-                                                   else s_altOk ls
+                                                   else altOk ls
                          Nothing => pure $ Just l
 
-  s_findAlt : (Maybe (List (Lit, Clause))) -> (_ : Clause) -> LState Assignments (Maybe (List (Lit, Clause)))
-  s_findAlt Nothing _ = pure Nothing
-  s_findAlt (Just acc) (MkClause ls) = do
-    (Just foundAlt) <- s_altOk ls
+  findAlt : (Maybe (List (Lit, Clause))) -> (_ : Clause) -> LState Assignments (Maybe (List (Lit, Clause)))
+  findAlt Nothing _ = pure Nothing
+  findAlt (Just acc) (MkClause ls) = do
+    (Just foundAlt) <- altOk ls
     | Nothing => pure Nothing
     pure $ Just ((foundAlt, MkClause ls)::acc)
 
-  --findAlt : (_ : Clause) -> (1 _ : LPair (Maybe (List (Lit, Clause))) Assignments) -> LPair (Maybe (List (Lit, Clause))) Assignments
-  --findAlt c (acc # as) = runLState as (s_findAlt c acc)
-
 mutual
-  solveTry : Bool -> Int -> Int -> (1 _ : Watchlist) -> (1 _ : Assignments) -> LPair Bool (Watchlist, Assignments)
-  solveTry a numVars d wl as =
-    let as' = assign as (MkVar d) a
-        (ok # (wl', as'')) = updateWatchlist wl (if a then MkNeg (MkVar d) else MkPos (MkVar d)) as'
-        in
-        if ok then True # (wl', as'')
-              else False # (wl', unassign as'' (MkVar d))
+  solveTry : Bool -> Int -> SolverState Bool
+  solveTry a d = do
+    liftSt $ assign (MkVar d) a
+    ok <- updateWatchlist (if a then MkNeg (MkVar d) else MkPos (MkVar d))
+    if ok then pure True
+          else do liftSt $ unassign (MkVar d)
+                  pure False
 
-  solve : Int -> Int -> (1 _ : Watchlist) -> (1 _ : Assignments) -> LPair Bool (Watchlist, Assignments)
-  solve numVars d wl as = if d >= numVars then True # (wl, as) else
-    case (solveTry False numVars d wl as) of
-         (True # (wl', as')) => case (solve numVars (assert_smaller d (d+1)) wl' as') of
-                                     (False # (wl'', as'')) => trytrue numVars d wl'' (unassign as'' (MkVar d))
-                                     r => r
-         (False # (wl', as')) => trytrue numVars d wl' as'
-         where
-           trytrue : Int -> Int -> (1 _ : Watchlist) -> (1 _ : Assignments) -> LPair Bool (Watchlist, Assignments)
-           trytrue numVars d wl as = case (solveTry True numVars d wl as) of
-                                                  (True # (wl', as')) => solve numVars (assert_smaller d (d+1)) wl' as'
-                                                  f => f
+  solve : Int -> Int -> SolverState Bool
+  solve numVars d = if d >= numVars then pure True else do
+    couldBeFalse <- solveTry False d
+    if couldBeFalse
+       then do
+         whenFalse <- solve numVars (assert_smaller d (d+1))
+         case whenFalse of
+              False => do
+                liftSt $ unassign (MkVar d)
+                trytrue numVars d
+              r => pure r
+       else trytrue numVars d
+    where
+      trytrue : Int -> Int -> SolverState Bool
+      trytrue numVars d = do
+        couldBeTrue <- solveTry True d
+        if couldBeTrue
+           then solve numVars (assert_smaller d (d+1))
+           else pure False
 
 export
 sat : Int -> List Clause -> Maybe (List (Var, Bool))
 sat numVars clauses =
   let wl = initWatchlist (2 * numVars) clauses
       as = initAssignments numVars
-      (r # (wl', as')) = solve numVars 0 wl as in
+      (r # (wl', as')) = runLState (wl, as) (solve numVars 0) in
       if r then traverse result (dumpArr as')
            else Nothing
   where

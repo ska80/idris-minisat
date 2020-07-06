@@ -1,8 +1,8 @@
 module Control.Linear.LState
 
-public export
-interface Applicative m => LMonad m where
-  (>>=) : (1 _ : m a) -> (1 f : ((_ : a) -> m b)) -> m b
+import Control.Linear
+
+%default total
 
 export
 data LState : (stateType : Type) -> (a : Type) -> Type where
@@ -38,18 +38,19 @@ export
 change : (f : (1 state : s) -> s) -> LState s ()
 change f = MkLState (\state => (() # f state))
 
-export
-liftL : LState a r -> LState (a, b) r
-liftL (MkLState f) = MkLState (\(sa, sb) => let (res # sa') = f sa in
-                                                    (res # (sa', sb)))
+public export
+interface SubState a b where
+  liftSt : LState a r -> LState b r
 
 export
-liftR : LState a r -> LState (b, a) r
-liftR (MkLState f) = MkLState (\(sb, sa) => let (res # sa') = f sa in
-                                                    (res # (sb, sa')))
+SubState a (a, b) where
+  liftSt (MkLState f) = MkLState (\(sa, sb) => let (res # sa') = f sa in
+                                                  (res # (sa', sb)))
 
 export
-withState : (1 f : stateType -> a -> b -> r) -> a -> b -> LState stateType r
+SubState a (b, a) where
+  liftSt (MkLState f) = MkLState (\(sb, sa) => let (res # sa') = f sa in
+                                                  (res # (sb, sa')))
 
 export
 runLState : (1 initState : stateType) -> (1 c : LState stateType r) -> LPair r stateType
