@@ -40,6 +40,7 @@ export
 toClause : (l : List Lit) -> {auto ok : NonEmpty l} -> Clause
 toClause l {ok} = MkClause l {ok}
 
+export
 Show Clause where
   show (MkClause l) = show l
 
@@ -172,8 +173,16 @@ mutual
       trytrue = do
         couldBeTrue <- solveTry True var
         if couldBeTrue
-           then solve numVars (assert_smaller d (d+1))
-           else pure False
+           then do
+             whenTrue <- solve numVars (assert_smaller d (d+1))
+             case whenTrue of
+                  False => do
+                    liftSt $ unassign var
+                    pure False
+                  r => pure r
+           else do
+             liftSt $ unassign var
+             pure False
 
 export
 sat : Int -> List Clause -> Maybe (List (Var, Bool))
