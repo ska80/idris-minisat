@@ -90,9 +90,9 @@ parseClause : Parser (Maybe Clause)
 parseClause = do
   lits <- many (terminal "literal" literal) <* terminal "zero" isZero
   many $ terminal "comment" isComment
-  pure $ case lits of
-       [] => Nothing
-       (c::cs) => Just $ toClause (c::cs)
+  id $ case lits of
+            [] => fatalError "empty clause can not be satisfied"
+            (c::cs) => pure $ Just $ toClause (c::cs)
 
 parseCNF : Parser CNFProblem
 parseCNF = do
