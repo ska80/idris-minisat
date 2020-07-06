@@ -180,9 +180,7 @@ mutual
                     liftSt $ unassign var
                     pure False
                   r => pure r
-           else do
-             liftSt $ unassign var
-             pure False
+           else pure False
 
 export
 sat : Int -> List Clause -> Maybe (List (Var, Bool))
