@@ -144,30 +144,33 @@ updateWatchlist assignFalse = do
     pure $ Just ((foundAlt, MkClause ls)::acc)
 
 mutual
-  solveTry : Bool -> Int -> SolverState Bool
-  solveTry a d = do
-    liftSt $ assign (MkVar d) a
-    ok <- updateWatchlist (if a then MkNeg (MkVar d) else MkPos (MkVar d))
+  solveTry : Bool -> Var -> SolverState Bool
+  solveTry a var = do
+    liftSt $ assign var a
+    ok <- updateWatchlist (if a then MkNeg var else MkPos var)
     if ok then pure True
-          else do liftSt $ unassign (MkVar d)
+          else do liftSt $ unassign var
                   pure False
 
   solve : Int -> Int -> SolverState Bool
   solve numVars d = if d >= numVars then pure True else do
-    couldBeFalse <- solveTry False d
+    couldBeFalse <- solveTry False var
     if couldBeFalse
        then do
          whenFalse <- solve numVars (assert_smaller d (d+1))
          case whenFalse of
               False => do
-                liftSt $ unassign (MkVar d)
-                trytrue numVars d
+                liftSt $ unassign var
+                trytrue
               r => pure r
-       else trytrue numVars d
+       else trytrue
     where
-      trytrue : Int -> Int -> SolverState Bool
-      trytrue numVars d = do
-        couldBeTrue <- solveTry True d
+      var : Var
+      var = MkVar d
+
+      trytrue : SolverState Bool
+      trytrue = do
+        couldBeTrue <- solveTry True var
         if couldBeTrue
            then solve numVars (assert_smaller d (d+1))
            else pure False
