@@ -27,10 +27,6 @@ LMonad (LState s) where
                                                       in r2 s')
 
 export
-pure : (val : a) -> LState s a
-pure val = MkLState (\s => (val # s))
-
-export
 run : (f : (1 state : s) -> (LPair a s)) -> LState s a
 run f = MkLState f
 
