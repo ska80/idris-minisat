@@ -155,32 +155,25 @@ mutual
 
   solve : Int -> Int -> SolverState Bool
   solve numVars d = if d >= numVars then pure True else do
-    couldBeFalse <- solveTry False var
-    if couldBeFalse
-       then do
-         whenFalse <- solve numVars (assert_smaller d (d+1))
-         case whenFalse of
-              False => do
-                liftSt $ unassign var
-                trytrue
-              r => pure r
-       else trytrue
+    tryValues [False, True]
     where
       var : Var
       var = MkVar d
 
-      trytrue : SolverState Bool
-      trytrue = do
-        couldBeTrue <- solveTry True var
-        if couldBeTrue
+      tryValues : List Bool -> SolverState Bool
+      tryValues [] = pure False
+      tryValues (val::rest) = do
+        couldBe <- solveTry val var
+        if couldBe
            then do
-             whenTrue <- solve numVars (assert_smaller d (d+1))
-             case whenTrue of
-                  False => do
-                    liftSt $ unassign var
-                    pure False
-                  r => pure r
-           else pure False
+             whenIsVal <- solve numVars (assert_smaller d (d+1))
+             if whenIsVal then pure True
+                          else do
+                            liftSt $ unassign var
+                            if val then pure False
+                                   else tryValues rest
+           else if val then pure False
+           else tryValues rest
 
 export
 sat : Int -> List Clause -> Maybe (List (Var, Bool))
