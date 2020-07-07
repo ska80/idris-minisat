@@ -1,0 +1,6 @@
+package isat
+
+depends = contrib
+
+main = Main
+executable = isat
