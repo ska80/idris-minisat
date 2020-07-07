@@ -108,7 +108,7 @@ export
 parseDIMACS : String -> Either String CNFProblem
 parseDIMACS s = do
   toks <- lexDimacs s
-  (parsed, toks) <- the (Either String (CNFProblem, List Token)) $ either (Left . showError) Right $ parse parseCNF toks
+  (parsed, toks) <- either (Left . showError) Right $ parse parseCNF toks
   Right parsed
 
 export
